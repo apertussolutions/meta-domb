@@ -1,0 +1,389 @@
+From 6b871399c986ea5852fa827cd055434e4e084c04 Mon Sep 17 00:00:00 2001
+From: "Daniel P. Smith" <dpsmith@apertussolutions.com>
+Date: Mon, 25 May 2020 20:22:12 -0400
+Subject: [PATCH] boot-domain: as one fat commit
+
+Signed-off-by: Daniel P. Smith <dpsmith@apertussolutions.com>
+---
+ arch/x86/include/asm/xen/hypercall.h |  7 ++++
+ arch/x86/include/asm/xen/interface.h | 29 +++++++++++++
+ drivers/xen/Kconfig                  |  8 ++++
+ drivers/xen/Makefile                 |  1 +
+ drivers/xen/boot-domain.c            | 72 ++++++++++++++++++++++++++++++++
+ drivers/xen/sys-hypervisor.c         | 68 +++++++++++++++++++++++++++++-
+ include/xen/interface/domctl.h       | 81 ++++++++++++++++++++++++++++++++++++
+ 7 files changed, 264 insertions(+), 2 deletions(-)
+ create mode 100644 drivers/xen/boot-domain.c
+ create mode 100644 include/xen/interface/domctl.h
+
+diff --git a/arch/x86/include/asm/xen/hypercall.h b/arch/x86/include/asm/xen/hypercall.h
+index d50c7b747d8b..abfbe79677a0 100644
+--- a/arch/x86/include/asm/xen/hypercall.h
++++ b/arch/x86/include/asm/xen/hypercall.h
+@@ -51,6 +51,7 @@
+ #include <xen/interface/physdev.h>
+ #include <xen/interface/platform.h>
+ #include <xen/interface/xen-mca.h>
++#include <xen/interface/domctl.h>
+ 
+ struct xen_dm_op_buf;
+ 
+@@ -446,6 +447,12 @@ HYPERVISOR_dm_op(
+ 	return ret;
+ }
+ 
++static inline int
++HYPERVISOR_domctl(struct xen_domctl *op)
++{
++	return _hypercall1(int, domctl, op);
++}
++
+ static inline void
+ MULTI_fpu_taskswitch(struct multicall_entry *mcl, int set)
+ {
+diff --git a/arch/x86/include/asm/xen/interface.h b/arch/x86/include/asm/xen/interface.h
+index 62ca03ef5c65..3263addf8ae2 100644
+--- a/arch/x86/include/asm/xen/interface.h
++++ b/arch/x86/include/asm/xen/interface.h
+@@ -73,6 +73,9 @@
+ #endif
+ 
+ #ifndef __ASSEMBLY__
++
++#define uint64_aligned_t uint64_t __attribute__((aligned(8)))
++
+ /* Explicitly size integers that represent pfns in the public interface
+  * with Xen so that on ARM we can have one ABI that works for 32 and 64
+  * bit guests. */
+@@ -375,6 +378,32 @@ struct xen_pmu_arch {
+ 
+ #endif	/* !__ASSEMBLY__ */
+ 
++#ifndef __ASSEMBLY__
++
++struct xen_arch_domainconfig {
++#define XEN_X86_EMU_LAPIC           (1U<<0)
++#define XEN_X86_EMU_HPET            (1U<<1)
++#define XEN_X86_EMU_PM              (1U<<2)
++#define XEN_X86_EMU_RTC             (1U<<3)
++#define XEN_X86_EMU_IOAPIC          (1U<<4)
++#define XEN_X86_EMU_PIC             (1U<<5)
++#define XEN_X86_EMU_VGA             (1U<<6)
++#define XEN_X86_EMU_IOMMU           (1U<<7)
++#define XEN_X86_EMU_PIT             (1U<<8)
++#define XEN_X86_EMU_USE_PIRQ        (1U<<9)
++#define XEN_X86_EMU_VPCI            (1U<<10)
++
++#define XEN_X86_EMU_ALL             (XEN_X86_EMU_LAPIC | XEN_X86_EMU_HPET |  \
++                                     XEN_X86_EMU_PM | XEN_X86_EMU_RTC |      \
++                                     XEN_X86_EMU_IOAPIC | XEN_X86_EMU_PIC |  \
++                                     XEN_X86_EMU_VGA | XEN_X86_EMU_IOMMU |   \
++                                     XEN_X86_EMU_PIT | XEN_X86_EMU_USE_PIRQ |\
++                                     XEN_X86_EMU_VPCI)
++	uint32_t emulation_flags;
++};
++
++#endif	/* !__ASSEMBLY__ */
++
+ /*
+  * Prefix forces emulation of some non-trapping instructions.
+  * Currently only CPUID.
+diff --git a/drivers/xen/Kconfig b/drivers/xen/Kconfig
+index a50dadd01093..a61e60fc76c1 100644
+--- a/drivers/xen/Kconfig
++++ b/drivers/xen/Kconfig
+@@ -128,6 +128,14 @@ config XEN_SYS_HYPERVISOR
+ 	 virtual environment, /sys/hypervisor will still be present,
+ 	 but will have no xen contents.
+ 
++config XEN_DOMCTL
++       bool "Adds domain control to kernel"
++       depends on XEN_SYS_HYPERVISOR
++       default y
++       help
++         Adds the ability to the kernel to directly control domains
++         without the need for a toolstack.
++
+ config XEN_XENBUS_FRONTEND
+ 	tristate
+ 
+diff --git a/drivers/xen/Makefile b/drivers/xen/Makefile
+index 0c4efa6fe450..a29d4b819dab 100644
+--- a/drivers/xen/Makefile
++++ b/drivers/xen/Makefile
+@@ -36,6 +36,7 @@ obj-$(CONFIG_XEN_SCSI_BACKEND)		+= xen-scsiback.o
+ obj-$(CONFIG_XEN_AUTO_XLATE)		+= xlate_mmu.o
+ obj-$(CONFIG_XEN_PVCALLS_BACKEND)	+= pvcalls-back.o
+ obj-$(CONFIG_XEN_PVCALLS_FRONTEND)	+= pvcalls-front.o
++obj-$(CONFIG_XEN_DOMCTL)		+= boot-domain.o
+ xen-evtchn-y				:= evtchn.o
+ xen-gntdev-y				:= gntdev.o
+ xen-gntdev-$(CONFIG_XEN_GNTDEV_DMABUF)	+= gntdev-dmabuf.o
+diff --git a/drivers/xen/boot-domain.c b/drivers/xen/boot-domain.c
+new file mode 100644
+index 000000000000..39350e3bdba8
+--- /dev/null
++++ b/drivers/xen/boot-domain.c
+@@ -0,0 +1,72 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ *  Copyright (c) 2020 Star Lab, Corp.
++ *  Authored by: Daniel P. Smith <dpsmith@apertussolutions.com>
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/err.h>
++#include <linux/init.h>
++#include <linux/printk.h>
++#include <linux/module.h>
++#include <linux/reboot.h>
++
++#include <asm/xen/hypercall.h>
++
++#include <xen/xen.h>
++#include <xen/interface/domctl.h>
++
++
++static unsigned int num_start = 0;
++module_param(num_start, uint, 0644);
++
++/* Set a sensible limit to the number of domains that can be unpaused */
++#define MAX_DOMAINS 64
++
++static int __init domctl_unpause(domid_t id)
++{
++	struct xen_domctl op = {
++		.cmd = XEN_DOMCTL_unpausedomain,
++		.interface_version = XEN_DOMCTL_INTERFACE_VERSION,
++		.domain = id,
++	};
++
++	return HYPERVISOR_domctl(&op);
++}
++
++static int __init xen_boot_domain_init(void)
++{
++	int i;
++
++	if (!xen_domain())
++		return -ENODEV;
++
++	if (unlikely(num_start > MAX_DOMAINS)) {
++		pr_err("Requesting too many domains to be unpaused,"
++			"cowardly starting max(%d)\n", MAX_DOMAINS);
++		num_start = MAX_DOMAINS;
++	}
++
++	if (num_start > 0) {
++		pr_info("Unpausing %d domains", num_start);
++		for (i=0; i <= num_start; i++) {
++			if (domctl_unpause(i) == 0)
++				pr_cont(".");
++			else
++				pr_cont("!");
++		}
++		pr_cont("done\n");
++
++		kernel_power_off();
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(xen_boot_domain_init);
++
++subsys_initcall(xen_boot_domain_init);
++
++MODULE_AUTHOR("Daniel P. Smith <dpsmith@apertussolutions.com>");
++MODULE_DESCRIPTION("Support for Xen boot domain unleashing initial domains");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/xen/sys-hypervisor.c b/drivers/xen/sys-hypervisor.c
+index feb1d16252e7..bcf2f3d0f05a 100644
+--- a/drivers/xen/sys-hypervisor.c
++++ b/drivers/xen/sys-hypervisor.c
+@@ -20,6 +20,9 @@
+ #ifdef CONFIG_XEN_HAVE_VPMU
+ #include <xen/interface/xenpmu.h>
+ #endif
++#ifdef CONFIG_XEN_DOMCTL
++#include <xen/interface/domctl.h>
++#endif
+ 
+ #define HYPERVISOR_ATTR_RO(_name) \
+ static struct hyp_sysfs_attr  _name##_attr = __ATTR_RO(_name)
+@@ -515,6 +518,56 @@ static int __init xen_sysfs_pmu_init(void)
+ }
+ #endif
+ 
++#ifdef CONFIG_XEN_DOMCTL
++
++static ssize_t domctl_unpause_store(struct hyp_sysfs_attr *attr,
++				  const char *buffer, size_t len)
++{
++	int ret;
++	u16 value;
++	struct xen_domctl op = {
++		.cmd = XEN_DOMCTL_unpausedomain,
++		.interface_version = XEN_DOMCTL_INTERFACE_VERSION,
++	};
++
++	ret = kstrtou16(buffer, 0, &value);
++	if (ret)
++		return ret;
++
++	op.domain = value;
++
++	pr_debug("DOMCTL Hypercall:\n");
++	print_hex_dump(KERN_DEBUG, "  ", DUMP_PREFIX_OFFSET, 16,
++			1, &op, 16, 0);
++
++	ret = HYPERVISOR_domctl(&op);
++	pr_debug("Result: %d\n", ret);
++
++	return ret;
++}
++
++static ssize_t domctl_unpause_show(struct hyp_sysfs_attr *attr, char *buffer)
++{
++	return sprintf(buffer, "\n");
++}
++HYPERVISOR_ATTR_RW(domctl_unpause);
++
++static struct attribute *xen_domctl_attrs[] = {
++	&domctl_unpause_attr.attr,
++	NULL
++};
++
++static const struct attribute_group xen_domctl_group = {
++	.name = "domctl",
++	.attrs = xen_domctl_attrs,
++};
++
++static int __init xen_sysfs_domctl_init(void)
++{
++	return sysfs_create_group(hypervisor_kobj, &xen_domctl_group);
++}
++#endif
++
+ static int __init hyper_sysfs_init(void)
+ {
+ 	int ret;
+@@ -543,15 +596,26 @@ static int __init hyper_sysfs_init(void)
+ #ifdef CONFIG_XEN_HAVE_VPMU
+ 	if (xen_initial_domain()) {
+ 		ret = xen_sysfs_pmu_init();
++		if (ret)
++			goto vpmu_out;
++	}
++#endif
++#ifdef CONFIG_XEN_DOMCTL
++	if (xen_initial_domain()) {
++		ret = xen_sysfs_domctl_init();
+ 		if (ret) {
+ 			sysfs_remove_group(hypervisor_kobj,
+-					   &xen_properties_group);
+-			goto prop_out;
++					   &xen_pmu_group);
++			goto vpmu_out;
+ 		}
+ 	}
+ #endif
+ 	goto out;
+ 
++vpmu_out:
++#ifdef CONFIG_XEN_HAVE_VPMU
++	sysfs_remove_group(hypervisor_kobj, &xen_properties_group);
++#endif
+ prop_out:
+ 	sysfs_remove_file(hypervisor_kobj, &uuid_attr.attr);
+ uuid_out:
+diff --git a/include/xen/interface/domctl.h b/include/xen/interface/domctl.h
+new file mode 100644
+index 000000000000..10e0a39f91a5
+--- /dev/null
++++ b/include/xen/interface/domctl.h
+@@ -0,0 +1,81 @@
++/******************************************************************************
++ * domctl.h
++ *
++ * Domain control operations. Intended for use by boot domain kernel.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to
++ * deal in the Software without restriction, including without limitation the
++ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
++ * sell copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++ * DEALINGS IN THE SOFTWARE.
++ *
++ * Copyright (c) 2020, Daniel P. Smith, Apertus Solutions, LLC
++ */
++
++#ifndef __XEN_PUBLIC_DOMCTL_H__
++#define __XEN_PUBLIC_DOMCTL_H__
++
++#include <xen/interface/xen.h>
++
++#define XEN_DOMCTL_INTERFACE_VERSION	0x00000012
++
++#define XEN_DOMCTL_pausedomain		3
++#define XEN_DOMCTL_unpausedomain	4
++
++
++#define XEN_DOMINF_dying		(1U << 0)
++#define XEN_DOMINF_hvm_guest		(1U << 1)
++#define XEN_DOMINF_shutdown		(1U << 2)
++#define XEN_DOMINF_paused		(1U << 3)
++#define XEN_DOMINF_blocked		(1U << 4)
++#define XEN_DOMINF_running		(1U << 5)
++#define XEN_DOMINF_debugged		(1U << 6)
++#define XEN_DOMINF_xs_domain		(1U << 7)
++#define XEN_DOMINF_hap			(1U << 8)
++#define XEN_DOMINF_shutdownmask		255
++#define XEN_DOMINF_shutdownshift	16
++
++#define XEN_INVALID_MAX_VCPU_ID (~0U) /* Domain has no vcpus? */
++
++#define XEN_DOMCTL_getdomaininfo	5
++struct xen_domctl_getdomaininfo {
++	domid_t  domain;
++	uint32_t flags;              /* XEN_DOMINF_* */
++	uint64_aligned_t tot_pages;
++	uint64_aligned_t max_pages;
++	uint64_aligned_t outstanding_pages;
++	uint64_aligned_t shr_pages;
++	uint64_aligned_t paged_pages;
++	uint64_aligned_t shared_info_frame; /* GMFN of shared_info struct */
++	uint64_aligned_t cpu_time;
++	uint32_t nr_online_vcpus;    /* Number of VCPUs currently online. */
++	uint32_t max_vcpu_id;        /* Maximum VCPUID in use by this domain. */
++	uint32_t ssidref;
++	xen_domain_handle_t handle;
++	uint32_t cpupool;
++	struct xen_arch_domainconfig arch_config;
++};
++
++struct xen_domctl {
++	uint32_t cmd;
++	uint32_t interface_version; /* XEN_DOMCTL_INTERFACE_VERSION */
++	domid_t  domain;
++	union {
++		struct xen_domctl_getdomaininfo     getdomaininfo;
++		uint8_t                             pad[128];
++	} u;
++};
++
++#endif /* __XEN_PUBLIC_DOMCTL_H__ */
+-- 
+2.11.0
+
