@@ -5,6 +5,14 @@ require xen-version.inc
 S = "${WORKDIR}/git"
 
 FILES_${PN} = "${libdir}/xen/bin/lcm-tool"
+FILES_${PN}-dbg = " \
+    ${libdir}/xen/bin/.debug/lcm-tool \
+    ${libdir}/xen/bin/.debug \
+    "
+
+PACKAGES = "${PN} ${PN}-dbg"
+PROVIDES = "${PN}"
+RPROVIDES_${PN} = "${PN}"
 
 do_compile() {
     cd ${S}
@@ -19,13 +27,13 @@ do_install() {
 
 #--- enable the native build
 
-do_configure_native() {
+do_configure() {
     cd ${S}
 
     unset CFLAGS
 
     # do configure
-    oe_runconf --disable=xen \
+    oe_runconf --disable-xen \
                --disable-docs \
                --disable-stubdom \
                --disable-monitors \
@@ -51,8 +59,9 @@ DEPENDS = " \
     autoconf-native \
     automake-native \
     libtool-native \
-    gettext \
-    iasl \
+    gettext-native \
+    iasl-native \
+    glib-2.0 \
     yajl \
     zlib \
 "
